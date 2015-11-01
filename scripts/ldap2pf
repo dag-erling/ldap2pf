@@ -1,0 +1,390 @@
+#!/usr/bin/perl -Tw
+#-
+# Copyright (c) 2013-2015 Universitetet i Oslo
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+# 1. Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+# 3. The name of the author may not be used to endorse or promote
+#    products derived from this software without specific prior written
+#    permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+# OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+# HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+# LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+# OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+# SUCH DAMAGE.
+#
+# Author: Dag-Erling Smørgrav <d.e.smorgrav@usit.uio.no>
+#
+
+use v5.14;
+use strict;
+use warnings;
+use open qw(:locale);
+use utf8;
+
+use Authen::SASL qw(Perl);
+use Getopt::Std;
+use Net::DNS;
+use Net::LDAP;
+use Net::LDAP::Control::Paged;
+use Net::LDAP::Constant qw(LDAP_CONTROL_PAGED);
+use POSIX;
+use Regexp::Common;
+use Socket qw(AF_INET AF_INET6
+    SOCK_DGRAM SOCK_STREAM
+    getaddrinfo getnameinfo
+    AI_CANONNAME NI_NUMERICHOST NI_NUMERICSERV);
+use Try::Tiny;
+
+our $opt_4;			# Include IPv4 addresses
+our $opt_6;			# Include IPv6 addresses
+our $opt_b;			# LDAP base
+our $opt_d;			# LDAP domain
+our $opt_h;			# Hostname
+our $opt_n;			# Dry run
+our $opt_P;			# Page size
+our $opt_p;			# Preserve existing addresses
+our $opt_s;			# LDAP server
+our $opt_t;			# Table name
+our $opt_u;			# LDAP user
+our $opt_v;			# Verbose mode
+
+our %rrs;
+
+our $host;			# Hostname
+our $domain;			# DNS and LDAP domain
+our $user;			# LDAP user
+our @servers;			# LDAP servers
+our $base;			# LDAP search base
+
+our $sasl;			# SASL context
+our $ldap;			# LDAP connection
+
+#
+# Print a message if in verbose mode.
+#
+sub verbose(@) {
+
+    if ($opt_v) {
+	my $msg = join('', @_);
+	$msg =~ s/\n*$/\n/s;
+	print(STDERR $msg);
+    }
+}
+
+#
+# Quote a command line so it can be printed in a form that can be
+# executed.
+#
+sub quote(@) {
+    return map {
+	m/[\\!\#\&\(\)\;\<\>\[\\\]\`\{\|\}\~\s]/ ? "'" . s/([\'\\])/\\$1/gr . "'" : $_;
+    } @_;
+}
+
+#
+# Run an LDAP search and return the result as an array of lines.
+#
+sub ldap_search($;@) {
+    my ($filter, @attrs) = @_;
+
+    verbose("# Looking for $filter in $base");
+    my $page = new Net::LDAP::Control::Paged(size => $opt_P || 250);
+    my %records;
+    while (1) {
+	my $res = $ldap->search(base => $base,
+				filter => $filter,
+				attrs => @attrs ? \@attrs : undef,
+				control => [ $page ]);
+	if ($res->code()) {
+	    die("failed to search LDAP directory: " . $res->error . "\n");
+	}
+	%records = (%records, %{$res->as_struct()});
+	my $control = $res->control(LDAP_CONTROL_PAGED)
+	    or last;
+	my $cookie = $control->cookie
+	    or last;
+	verbose("# next page (", int(keys %records), ")");
+	$page->cookie($cookie);
+    }
+    verbose("# last page (", int(keys %records), ")");
+    return \%records;
+}
+
+#
+# Look up a group by common name
+#
+sub ldap_lookup_group($;@) {
+    my ($cn, @attrs) = @_;
+
+    return ldap_search("(\&(objectclass=group)(name=$cn))", @attrs);
+}
+
+#
+# Look up a specific object in the LDAP directory
+#
+sub ldap_lookup_dn($;@) {
+    my ($dn, @attrs) = @_;
+
+    my $res = ldap_search("(distinguishedname=$dn)", @attrs)
+	or return undef;
+    return $$res{$dn};
+}
+
+our %group_cache;
+
+#
+# Look up a group recursively in the LDAP directory and return a
+# deduplicated list of the DNS names of its members.
+#
+sub ldap_resolve_group_r($$);
+sub ldap_resolve_group_r($$) {
+    my ($dn, $obj) = @_;
+    my %hostnames;
+
+    verbose("# resolving $dn");
+    map({ $hostnames{$_} = 1 } @{$$obj{dnshostname}});
+    foreach my $dn (@{$$obj{member}}) {
+	my $obj = ldap_lookup_dn($dn, qw(objectclass member dnshostname))
+	    or next;
+	map({ $hostnames{$_} = 1 } ldap_resolve_group_r($dn, $obj));
+    }
+    return keys(%hostnames);
+}
+
+sub ldap_resolve_group($) {
+    my ($group) = @_;
+
+    # Look it up
+    if (!$group_cache{$group}) {
+	my $res = ldap_lookup_group($group, qw(member));
+	while (my ($dn, $obj) = each %$res) {
+	    map({ $group_cache{$group}->{lc($_)} = 1 }
+		ldap_resolve_group_r($dn, $obj));
+	}
+    }
+    return keys(%{$group_cache{$group}});
+}
+
+
+
+#
+# This section was copied from srv2pf.pl and should probably go into a
+# shared module.
+#
+
+our $resolver;
+our %dns_cache;
+
+#
+# Recursively resolve CNAME, A and AAAA records for a given DNS name
+#
+sub dns_lookup($);
+sub dns_lookup($) {
+    my ($dnsname) = @_;
+
+    return $dnsname
+	if $dnsname =~ m/^($RE{net}{IPv4}|$RE{net}{IPv6})$/o;
+    if (!$dns_cache{$dnsname}) {
+	$resolver //= Net::DNS::Resolver->new;
+	verbose("# looking up $dnsname");
+	my %answers;
+	foreach my $rr ('CNAME', keys %rrs) {
+	    next unless my $query = $resolver->query($dnsname, $rr, 'IN');
+	    foreach my $res ($query->answer) {
+		verbose("# ", $res->string);
+		if ($res->type eq 'CNAME') {
+		    map({ $answers{$_}++ } dns_lookup($res->cname));
+		} elsif ($rrs{$res->type}) {
+		    $answers{$res->address}++;
+		}
+	    }
+	}
+	$dns_cache{$dnsname} = [ keys %answers ];
+    }
+    return @{$dns_cache{$dnsname}}
+}
+
+#
+# Look up an SRV record
+#
+sub srv_lookup($$;$) {
+    my ($name, $service, $transport) = @_;
+
+    $transport //= "tcp";
+    $resolver //= Net::DNS::Resolver->new;
+    my $dnsname = "_$service._$transport.$name";
+    my $type = 'SRV';
+    verbose("# looking up $type for $dnsname");
+    my $query = $resolver->query($dnsname, $type, 'IN')
+	or return ();
+    my %answers;
+    map({ $answers{$_->target}++ } $query->answer);
+    return keys %answers;
+}
+
+
+
+#
+# Look up all hosts in a list and return a deduplicated list of their
+# addresses.
+#
+sub dns_lookup_hosts(@) {
+    my (@members) = @_;
+
+    my %addresses;
+    map({ map({ ++$addresses{$_} } dns_lookup($_)) } @members);
+    return keys(%addresses);
+}
+
+#
+# Look up a group of hosts in the LDAP directory, resolve their
+# addresses, and create or update matching PF tables.
+#
+sub ldap2pf($) {
+    my ($group) = @_;
+
+    my @pfctl_cmd = ('/sbin/pfctl');
+    push(@pfctl_cmd, '-q')
+	unless $opt_v;
+    push(@pfctl_cmd, '-t', $group, '-T');
+    my @addresses = dns_lookup_hosts(ldap_resolve_group($group));
+    if (@addresses) {
+	push(@pfctl_cmd, $opt_p ? 'add' : 'replace', sort(@addresses));
+    } else {
+	return if $opt_p;
+	push(@pfctl_cmd, 'flush');
+    }
+    verbose(join(' ', quote(@pfctl_cmd)));
+    system(@pfctl_cmd)
+	unless $opt_n;
+}
+
+#
+# Print usage string and exit.
+#
+sub usage() {
+
+    print(STDERR
+	  "usage: ldap2pf [-46npv] [-b base] [-d domain] [-s ldap server] [-u user]\n",
+	  "               [-P page size] group ...\n");
+    exit(1);
+}
+
+#
+# Main program - set defaults, validate and apply command-line
+# arguments, then iterate over specified groups.
+#
+MAIN:{
+    $ENV{PATH} = '';
+    usage() unless @ARGV;
+    if (!getopts('46b:d:h:nps:u:v') || @ARGV < 1) {
+	usage();
+    }
+
+    # Address families
+    $rrs{A} = 1 if $opt_4 || !$opt_6;
+    $rrs{AAAA} = 1 if $opt_6 || !$opt_4;
+
+    # Hostname
+    $host = $opt_h // [ POSIX::uname() ]->[1];
+    die("invalid hostname: $host")
+	unless $host =~ m/^($RE{net}{domain})$/o;
+    verbose("# host: $host");
+
+    # Domain
+    if ($opt_d) {
+	$domain = $opt_d;
+    } else {
+	$domain = $1
+	    if $host =~ m/^[\w-]+\.((?:[\w-]+\.)*[\w-]+)\.?$/;
+	die("unable to derive domain from hostname\n")
+	    unless $domain;
+    }
+    die("invalid domain: $domain\n")
+	unless $domain =~ m/^($RE{net}{domain})$/o;
+    $domain = lc($1);
+    verbose("# domain: $domain");
+
+    # User
+    $user = $opt_u // POSIX::getlogin();
+    die("invalid user: $user\n")
+	unless $user =~ m/^([\w-]+(?:\@$RE{net}{domain})?)$/o;
+    $user = $1;
+    $user = "$user\@$domain"
+	unless $user =~ m/\@/;
+    verbose("# user: $user");
+
+    # LDAP servers
+    if ($opt_s) {
+	@servers = split(',', $opt_s);
+    } else {
+	@servers = srv_lookup($domain, 'ldap');
+	die("unable to retrieve LDAP servers from DNS\n")
+	    unless @servers;
+    }
+    foreach (@servers) {
+	die("invalid server: $_\n")
+	    unless m/^($RE{net}{domain})\.?$/o;
+	$_ = $1;
+    }
+    verbose("# servers: ", join(' ', @servers));
+
+    # Search base
+    if ($opt_b) {
+	die("invalid base: $opt_b\n")
+	    unless $opt_b =~ m/^(DC=[0-9a-z-]+(?:,DC=[0-9a-z-]+)*)$/o;
+	$base = $1;
+    } else {
+	$base = join(',', map({ "DC=$_" } split(/[.]/, $domain)));
+    }
+    verbose("# base: $base");
+
+    # Connect to LDAP server 
+    foreach (@servers) {
+	verbose("# Attempting to connect to $_");
+	try {
+	    $sasl = new Authen::SASL(mechanism => 'GSSAPI',
+				     callback => {
+					 user => $user,
+					 password => '',
+				     });
+	    $sasl = $sasl->client_new('ldap', $_);
+	    $ldap = new Net::LDAP($_, onerror => 'die')
+		or die("$@\n");
+	    $ldap->bind(sasl => $sasl);
+	} catch {
+	    verbose("# unable to connect to LDAP server: $_\n");
+	    $ldap = undef;
+	};
+	last if $ldap;
+    }
+    die("failed to connect to an LDAP server\n")
+	unless $ldap;
+
+    # Process groups from command line
+    foreach (@ARGV) {
+	if (!m/^([\w-]+)$/) {
+	    warn("invalid argument: $_\n");
+	    next;
+	}
+	ldap2pf($1);
+    }
+
+    # Work around bug in Net::LDAP
+    $SIG{__DIE__} = sub { exit 0 };
+}
