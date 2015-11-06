@@ -9,7 +9,7 @@ use ExtUtils::MakeMaker;
 
 WriteMakefile(
     NAME		=> 'UiO::LDAP2PF',
-    VERSION		=> 20151101,
+    VERSION_FROM	=> 'scripts/ldap2pf',
     ABSTRACT		=> 'Create and update PF tables from LDAP groups',
     AUTHOR		=> [ 'Dag-Erling Smørgrav <d.e.smorgrav@usit.uio.no>' ],
     MIN_PERL_VERSION	=> v5.14,

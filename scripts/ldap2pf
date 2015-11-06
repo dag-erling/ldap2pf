@@ -50,6 +50,8 @@ use Socket qw(AF_INET AF_INET6
     AI_CANONNAME NI_NUMERICHOST NI_NUMERICSERV);
 use Try::Tiny;
 
+our $VERSION = "20151106";
+
 our $opt_4;			# Include IPv4 addresses
 our $opt_6;			# Include IPv6 addresses
 our $opt_b;			# LDAP base
@@ -280,8 +282,8 @@ sub ldap2pf($) {
 sub usage() {
 
     print(STDERR
-	  "usage: ldap2pf [-46npv] [-b base] [-d domain] [-s ldap server] [-u user]\n",
-	  "               [-P page size] group ...\n");
+	  "usage: ldap2pf [-46hnpv] [-b base] [-d domain] [-h host]\n",
+	  "           [-P page size] [-s servers] [-u user] group ...\n");
     exit(1);
 }
 
@@ -354,7 +356,7 @@ MAIN:{
     }
     verbose("# base: $base");
 
-    # Connect to LDAP server 
+    # Connect to LDAP server
     foreach (@servers) {
 	verbose("# Attempting to connect to $_");
 	try {
@@ -388,3 +390,144 @@ MAIN:{
     # Work around bug in Net::LDAP
     $SIG{__DIE__} = sub { exit 0 };
 }
+
+__END__
+
+=encoding utf8
+
+=head1 NAME
+
+B<ldap2pf> - Create and update PF tables from LDAP groups
+
+=head1 SYNOPSIS
+
+B<ldap2pf> [B<-46hnpv>] S<[B<-b> I<base>]> S<[B<-d> I<domain>]> S<[B<-h> I<host>]> S<[B<-P> I<page size>]> S<[B<-s> I<servers>]> S<[B<-u> I<user>[I<@domain>]]> I<group> I<...>
+
+=head1 DESCRIPTION
+
+The B<ldap2pf> utility creates and updates PF address tables based on
+group memberships in an LDAP directory.
+
+For each group name specified on the command line, the B<ldap2pf>
+utility searches the LDAP directory for group objects bearing that
+name.  It then resolves the membership of these groups recursively,
+collects the I<DNSHostName> attributes of all member objects, and
+looks up I<A> and / or I<AAAA> DNS records for these names.
+
+If no errors occured during this process, a PF address table with the
+same name as the LDAP group is either created or updated to match the
+list of IP addresses that were discovered.  If the table already
+exists, its contents are replaced with the list that was obtained from
+the LDAP directory, unless the B<-p> option was specified, in which
+case the table is treated as append-only.
+
+The following options are available:
+
+=over
+
+=item B<-4>
+
+Include IPv4 addresses in the table.  If neither B<-4> nor B<-6> is
+specified, the default is to include both IPv4 and IPv6 addresses.
+
+=item B<-6>
+
+Include IPv6 addresses in the table.  If neither B<-4> nor B<-6> is
+specified, the default is to include both IPv4 and IPv6 addresses.
+
+=item B<-b> I<base>
+
+The search base for LDAP lookups.  The default is derived from the
+LDAP domain.
+
+=item B<-d> I<domain>
+
+The LDAP domain.  The default is derived from the host name.
+
+=item B<-h> I<host>
+
+The client's host name.  The default is whatever L<uname(3)> returns.
+
+=item B<-n>
+
+Perform all LDAP and DNS lookups, but do not create or update any PF
+tables.
+
+=item B<-P> I<page size>
+
+The page size to use for LDAP requests.  The default is 250.
+
+=item B<-p>
+
+Preserve existing table entries even if they are no longer members of
+the corresponding group.
+
+=item B<-s> I<servers>
+
+A comma-separated list of LDAP server names.  The default is to
+perform an I<SRV> lookup.
+
+=item B<-u> I<user>[I<@domain>]
+
+The user name used to bind to the LDAP server, with or without domain
+qualifier.  The default is the name of the current user.
+
+=item B<-v>
+
+Show progress and debugging information.
+
+=back
+
+=head1 IMPLEMENTATION NOTES
+
+The B<ldap2pf> utility was designed for use with Microsoft Active
+Directory servers, and assumes that the server supports and requires
+GSSAPI authentication and that a valid Kerberos ticket is available.
+
+=head1 EXAMPLES
+
+Update a table named I<mx> used to allow traffic to and from the
+organisation's mail servers:
+
+    % grep -w mx /etc/pf.conf
+    table <mx> persist
+    pass in on egress proto tcp from any to <mx> port { smtp, smtps }
+    pass out on egress proto tcp from <mx> to any port { smtp, smtps }
+    % sudo env KRB5CCNAME=/var/db/ro_user.cc ldap2pf -pv -u ro_user mx
+    # host: client.example.com
+    # domain: example.com
+    # user: ro_user@example.com
+    # looking up SRV for _ldap._tcp.example.com
+    # servers: dc01.example.com dc02.example.com
+    # base: DC=example,DC=com
+    # Attempting to connect to dc01.example.com
+    # Looking for (&(objectclass=group)(name=mx)) in DC=example,DC=com
+    # last page (1)
+    # resolving CN=mx,OU=roles,OU=hostpolicies,DC=example,DC=com
+    # Looking for (distinguishedname=CN=mx01,OU=hosts,DC=example,DC=com) in DC=example,DC=com
+    # last page (1)
+    # resolving CN=mx01,OU=hosts,DC=example,DC=com
+    # Looking for (distinguishedname=CN=mx02,OU=hosts,DC=example,DC=com) in DC=example,DC=com
+    # last page (1)
+    # resolving CN=mx02,OU=hosts,DC=example,DC=com
+    # looking up mx01.example.com
+    # mx01.example.com.    3600    IN      AAAA    2001:db8:0:42::2501
+    # mx01.example.com.    3600    IN      A       198.51.100.1
+    # looking up mx02.example.com
+    # mx02.example.com.    3600    IN      AAAA    2001:db8:0:42::2502
+    # mx02.example.com.    3600    IN      A       198.51.100.2
+    /sbin/pfctl -t mx -T add 198.51.100.1 198.51.100.2 2001:db8:0:42:0:0:0:2501 2001:db8:0:42:0:0:0:2502
+    No ALTQ support in kernel
+    ALTQ related functions disabled
+    4/4 addresses added.
+
+=head1 SEE ALSO
+
+L<kinit(1)>, L<pf(4)>, L<pfctl(8)>
+
+=head1 AUTHOR
+
+The B<ldap2pf> utility was written by Dag-Erling Smørgrav
+<d.e.smorgrav@usit.uio.no> for the University of Oslo.
+
+=cut
