@@ -512,11 +512,11 @@ organisation's mail servers:
     # resolving CN=mx02,OU=hosts,DC=example,DC=com
     # looking up mx01.example.com
     # mx01.example.com.    3600    IN      AAAA    2001:db8:0:42::2501
-    # mx01.example.com.    3600    IN      A       198.51.100.1
+    # mx01.example.com.    3600    IN      A       198.51.100.251
     # looking up mx02.example.com
     # mx02.example.com.    3600    IN      AAAA    2001:db8:0:42::2502
-    # mx02.example.com.    3600    IN      A       198.51.100.2
-    /sbin/pfctl -t mx -T add 198.51.100.1 198.51.100.2 2001:db8:0:42:0:0:0:2501 2001:db8:0:42:0:0:0:2502
+    # mx02.example.com.    3600    IN      A       198.51.100.252
+    /sbin/pfctl -t mx -T add 198.51.100.251 198.51.100.252 2001:db8:0:42:0:0:0:2501 2001:db8:0:42:0:0:0:2502
     No ALTQ support in kernel
     ALTQ related functions disabled
     4/4 addresses added.
