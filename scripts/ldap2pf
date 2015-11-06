@@ -50,7 +50,7 @@ use Socket qw(AF_INET AF_INET6
     AI_CANONNAME NI_NUMERICHOST NI_NUMERICSERV);
 use Try::Tiny;
 
-our $VERSION = "20151106";
+our $VERSION = '20151106';
 
 our $opt_4;			# Include IPv4 addresses
 our $opt_6;			# Include IPv6 addresses
@@ -492,7 +492,11 @@ organisation's mail servers:
     % grep -w mx /etc/pf.conf
     table <mx> persist
     pass in on egress proto tcp from any to <mx> port { smtp, smtps }
+    pass out on dmz proto tcp from any to <mx> port { smtp, smtps }
+    pass in on dmz proto tcp from <mx> to any port { smtp, smtps }
     pass out on egress proto tcp from <mx> to any port { smtp, smtps }
+    pass in on int proto tcp from int:network to <mx> port { smtp, smtps }
+    pass out on dmz proto tcp from int:network to <mx> port { smtp, smtps }
     % sudo env KRB5CCNAME=/var/db/ro_user.cc ldap2pf -pv -u ro_user mx
     # host: client.example.com
     # domain: example.com
