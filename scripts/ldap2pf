@@ -50,12 +50,13 @@ use Socket qw(AF_INET AF_INET6
     AI_CANONNAME NI_NUMERICHOST NI_NUMERICSERV);
 use Try::Tiny;
 
-our $VERSION = '20151106';
+our $VERSION = '20170226';
 
 our $opt_4;			# Include IPv4 addresses
 our $opt_6;			# Include IPv6 addresses
 our $opt_b;			# LDAP base
 our $opt_d;			# LDAP domain
+our $opt_f;			# Persistence directory
 our $opt_h;			# Hostname
 our $opt_n;			# Dry run
 our $opt_P;			# Page size
@@ -67,6 +68,7 @@ our $opt_v;			# Verbose mode
 
 our %rrs;
 
+our $filedir;			# Persistence directory
 our $host;			# Hostname
 our $domain;			# DNS and LDAP domain
 our $user;			# LDAP user
@@ -260,11 +262,34 @@ sub dns_lookup_hosts(@) {
 sub ldap2pf($) {
     my ($group) = @_;
 
+    # Perform LDAP and DNS lookup
+    my @addresses = dns_lookup_hosts(ldap_resolve_group($group));
+
+    # Store addresses to file
+    if ($filedir) {
+	my $file = "$filedir/$group";
+	my $tmpfile = "$file.$$";
+	verbose("writing the table to $tmpfile");
+	if (!open(my $fh, ">", $opt_n ? "/dev/null" : $tmpfile)) {
+	    warn("$tmpfile: $!\n");
+	} else {
+	    print($fh join("\n", @addresses), "\n")
+		if @addresses;
+	    verbose("renaming $tmpfile to $file");
+	    if (!$opt_n && !rename($tmpfile, $file)) {
+		warn("rename($tmpfile, $file): $!\n");
+		verbose("deleting $tmpfile");
+		unlink($tmpfile);
+	    }
+	    close($fh);
+	}
+    }
+
+    # Create or update table
     my @pfctl_cmd = ('/sbin/pfctl');
     push(@pfctl_cmd, '-q')
 	unless $opt_v;
     push(@pfctl_cmd, '-t', $group, '-T');
-    my @addresses = dns_lookup_hosts(ldap_resolve_group($group));
     if (@addresses) {
 	push(@pfctl_cmd, $opt_p ? 'add' : 'replace', sort(@addresses));
     } else {
@@ -282,7 +307,7 @@ sub ldap2pf($) {
 sub usage() {
 
     print(STDERR
-	  "usage: ldap2pf [-46npv] [-b base] [-d domain] [-h host]\n",
+	  "usage: ldap2pf [-46npv] [-b base] [-d domain] [-f path] [-h host]\n",
 	  "           [-P page size] [-s servers] [-u user] group ...\n");
     exit(1);
 }
@@ -294,8 +319,17 @@ sub usage() {
 MAIN:{
     $ENV{PATH} = '';
     usage() unless @ARGV;
-    if (!getopts('46b:d:h:nps:u:v') || @ARGV < 1) {
+    if (!getopts('46b:d:f:h:nps:u:v') || @ARGV < 1) {
 	usage();
+    }
+
+    # Filename
+    if ($opt_f) {
+	die("invalid file name\n")
+	    unless $opt_f =~ m@^(/?(?:[0-9A-Za-z._-]+/)*[0-9A-Za-z._-]+)$@;
+	$filedir = $1;
+	die("$filedir is not a directory\n")
+	    unless -d $filedir;
     }
 
     # Address families
@@ -401,7 +435,7 @@ B<ldap2pf> - Create and update PF tables from LDAP groups
 
 =head1 SYNOPSIS
 
-B<ldap2pf> [B<-46npv>] S<[B<-b> I<base>]> S<[B<-d> I<domain>]> S<[B<-h> I<host>]> S<[B<-P> I<page size>]> S<[B<-s> I<servers>]> S<[B<-u> I<user>[I<@domain>]]> I<group> I<...>
+B<ldap2pf> [B<-46npv>] S<[B<-b> I<base>]> S<[B<-d> I<domain>]> S<[B<-f> I<path>]> S<[B<-h> I<host>]> S<[B<-P> I<page size>]> S<[B<-s> I<servers>]> S<[B<-u> I<user>[I<@domain>]]> I<group> I<...>
 
 =head1 DESCRIPTION
 
@@ -443,6 +477,12 @@ LDAP domain.
 =item B<-d> I<domain>
 
 The LDAP domain.  The default is derived from the host name.
+
+=item B<-f> I<path>
+
+The path to a directory in which to store each table as a separate
+file, named for the group it represents.  The default is to not store
+the tables to disk.
 
 =item B<-h> I<host>
 
