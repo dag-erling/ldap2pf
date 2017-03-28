@@ -50,7 +50,7 @@ use Socket qw(AF_INET AF_INET6
     AI_CANONNAME NI_NUMERICHOST NI_NUMERICSERV);
 use Try::Tiny;
 
-our $VERSION = '20170226';
+our $VERSION = '20170328';
 
 our $opt_4;			# Include IPv4 addresses
 our $opt_6;			# Include IPv6 addresses
@@ -264,6 +264,8 @@ sub ldap2pf($) {
 
     # Perform LDAP and DNS lookup
     my @addresses = dns_lookup_hosts(ldap_resolve_group($group));
+    @addresses = (sort(grep { /\./ } @addresses),
+		  sort(grep { /:/ } @addresses));
 
     # Store addresses to file
     if ($filedir) {
@@ -291,7 +293,7 @@ sub ldap2pf($) {
 	unless $opt_v;
     push(@pfctl_cmd, '-t', $group, '-T');
     if (@addresses) {
-	push(@pfctl_cmd, $opt_p ? 'add' : 'replace', sort(@addresses));
+	push(@pfctl_cmd, $opt_p ? 'add' : 'replace', @addresses);
     } else {
 	return if $opt_p;
 	push(@pfctl_cmd, 'flush');
