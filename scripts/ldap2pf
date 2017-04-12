@@ -56,6 +56,7 @@ our $opt_4;			# Include IPv4 addresses
 our $opt_6;			# Include IPv6 addresses
 our $opt_b;			# LDAP base
 our $opt_d;			# LDAP domain
+our $opt_F;			# Never flush
 our $opt_f;			# Persistence directory
 our $opt_h;			# Hostname
 our $opt_n;			# Dry run
@@ -266,6 +267,10 @@ sub ldap2pf($) {
     my @addresses = dns_lookup_hosts(ldap_resolve_group($group));
     @addresses = (sort(grep { /\./ } @addresses),
 		  sort(grep { /:/ } @addresses));
+    if ($opt_F && !@addresses) {
+	verbose("# not flushing $group");
+	return undef;
+    }
 
     # Store addresses to file
     if ($filedir) {
@@ -309,7 +314,7 @@ sub ldap2pf($) {
 sub usage() {
 
     print(STDERR
-	  "usage: ldap2pf [-46npv] [-b base] [-d domain] [-f path] [-h host]\n",
+	  "usage: ldap2pf [-46Fnpv] [-b base] [-d domain] [-f path] [-h host]\n",
 	  "           [-P page size] [-s servers] [-u user] group ...\n");
     exit(1);
 }
@@ -321,7 +326,7 @@ sub usage() {
 MAIN:{
     $ENV{PATH} = '';
     usage() unless @ARGV;
-    if (!getopts('46b:d:f:h:nps:u:v') || @ARGV < 1) {
+    if (!getopts('46b:d:Ff:h:nps:u:v') || @ARGV < 1) {
 	usage();
     }
 
@@ -437,7 +442,7 @@ B<ldap2pf> - Create and update PF tables from LDAP groups
 
 =head1 SYNOPSIS
 
-B<ldap2pf> [B<-46npv>] S<[B<-b> I<base>]> S<[B<-d> I<domain>]> S<[B<-f> I<path>]> S<[B<-h> I<host>]> S<[B<-P> I<page size>]> S<[B<-s> I<servers>]> S<[B<-u> I<user>[I<@domain>]]> I<group> I<...>
+B<ldap2pf> [B<-46Fnpv>] S<[B<-b> I<base>]> S<[B<-d> I<domain>]> S<[B<-f> I<path>]> S<[B<-h> I<host>]> S<[B<-P> I<page size>]> S<[B<-s> I<servers>]> S<[B<-u> I<user>[I<@domain>]]> I<group> I<...>
 
 =head1 DESCRIPTION
 
@@ -479,6 +484,12 @@ LDAP domain.
 =item B<-d> I<domain>
 
 The LDAP domain.  The default is derived from the host name.
+
+=item B<-F>
+
+Never flush a table.  If an LDAP lookup does not return any results,
+assume that something is wrong and terminate without updating the
+table or file.
 
 =item B<-f> I<path>
 
