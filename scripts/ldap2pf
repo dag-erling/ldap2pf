@@ -43,7 +43,7 @@ use Net::LDAP;
 use Net::LDAP::Control::Paged;
 use Net::LDAP::Constant qw(LDAP_CONTROL_PAGED);
 use POSIX;
-use Regexp::Common;
+use Regexp::Common qw(pattern);
 use Socket qw(AF_INET AF_INET6
     SOCK_DGRAM SOCK_STREAM
     getaddrinfo getnameinfo
@@ -51,6 +51,12 @@ use Socket qw(AF_INET AF_INET6
 use Try::Tiny;
 
 our $VERSION = '20170412';
+
+# Regexp for paths (POSIX portable filename character set)
+pattern
+    name => [ qw(path pfcs) ],
+    create => '/?(?:[0-9A-Za-z._-]+/)*[0-9A-Za-z._-]+',
+    ;
 
 our $opt_4;			# Include IPv4 addresses
 our $opt_6;			# Include IPv6 addresses
@@ -346,7 +352,7 @@ MAIN:{
     # Filename
     if ($opt_f) {
 	die("invalid file name\n")
-	    unless $opt_f =~ m@^(/?(?:[0-9A-Za-z._-]+/)*[0-9A-Za-z._-]+)$@;
+	    unless $opt_f =~ m/^($RE{path}{pfcs})$/o;
 	$filedir = $1;
 	die("$filedir is not a directory\n")
 	    unless -d $filedir;
