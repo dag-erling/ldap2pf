@@ -376,20 +376,19 @@ MAIN:{
     $host = $opt_h // [ POSIX::uname() ]->[1];
     die("invalid hostname: $host")
 	unless $host =~ m/^($RE{net}{domain})$/o;
+    $host = lc($1);
     verbose("# host: $host");
 
     # Domain
     if ($opt_d) {
-	$domain = $opt_d;
+	die("invalid domain: $domain\n")
+	    unless $opt_d =~ m/^($RE{net}{domain})$/o;
+	$domain = lc($1);
     } else {
-	$domain = $1
-	    if $host =~ m/^[\w-]+\.((?:[\w-]+\.)*[\w-]+)\.?$/;
-	die("unable to derive domain from hostname\n")
-	    unless $domain;
+        die("unable to derive domain from hostname\n")
+            unless $host =~ m/^[^.]+\.($RE{net}{domain})$/o;
+	$domain = $1;
     }
-    die("invalid domain: $domain\n")
-	unless $domain =~ m/^($RE{net}{domain})$/o;
-    $domain = lc($1);
     verbose("# domain: $domain");
 
     # User
