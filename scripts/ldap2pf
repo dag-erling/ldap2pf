@@ -449,7 +449,7 @@ MAIN:{
 
     # Process groups from command line
     foreach (@ARGV) {
-	if (!m/^([\w-]+)$/) {
+	if (!m/^(\w(?:[\w-]*\w)?)$/) {
 	    warn("invalid argument: $_\n");
 	    next;
 	}
