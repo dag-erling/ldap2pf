@@ -50,7 +50,7 @@ use Socket qw(AF_INET AF_INET6
     AI_CANONNAME NI_NUMERICHOST NI_NUMERICSERV);
 use Try::Tiny;
 
-our $VERSION = '20170412';
+our $VERSION = '20170424';
 
 # Regexp for paths (POSIX portable filename character set)
 pattern
