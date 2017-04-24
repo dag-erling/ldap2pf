@@ -340,6 +340,9 @@ MAIN:{
 	usage();
     }
 
+    # Preserve implies no-flush
+    $opt_F ||= $opt_p;
+
     # Filename
     if ($opt_f) {
 	die("invalid file name\n")
@@ -523,7 +526,10 @@ The page size to use for LDAP requests.  The default is 250.
 =item B<-p>
 
 Preserve existing table entries even if they are no longer members of
-the corresponding group.
+the corresponding group.  Implies B<-F>.
+
+This does not apply to the file generated with the B<-f> option, which
+will only contain the addresses retrieved from LDAP and DNS.
 
 =item B<-s> I<servers>
 
