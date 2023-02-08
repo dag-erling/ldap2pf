@@ -108,32 +108,79 @@ sub quote(@) {
 }
 
 #
+# Handles Active Directory attribute range retrival
+# REF: https://learn.microsoft.com/en-us/previous-versions/windows/desktop/ldap/searching-using-range-retrieval
+#
+
+sub ldap_attribute_search($$$$) {
+	my ($filter, $records, $res, $range_attribute) = @_;
+	my $index = 0;
+	my $clean_attr;
+	my $entry;
+	my $attr;
+	($range_attribute) = $range_attribute =~ m/^(.*);range=/;
+	while (1) {
+		$entry = $res->entry(0);
+		foreach $attr ($entry->attributes) {
+			if ( ($index) = $attr =~ m/^$range_attribute;range=\d+-(.*)$/) {
+				push (@{${$records}{$entry->dn}{$range_attribute}}, ($entry->get_value($attr)));
+				$index++  if ($index ne '*');
+				last
+			}
+		}
+		if ($index eq 0) {
+			die("Failed to parse range in attribute: $range_attribute\n")
+		}
+		last if $index eq "*";
+		$res = $ldap->search(
+			base => $base,
+			filter => $filter,
+			attrs => ["$range_attribute;range=$index-*"],
+		);
+
+		if ($res->code()) {
+			die("failed to search LDAP directory: " . $res->error . "\n");
+		}
+	}
+}
+
+
+#
 # Run an LDAP search and return the result as an array of lines.
 #
 sub ldap_search($;@) {
-    my ($filter, @attrs) = @_;
-
-    verbose("# Looking for $filter in $base");
-    my $page = new Net::LDAP::Control::Paged(size => $opt_P || 250);
-    my %records;
-    while (1) {
-	my $res = $ldap->search(base => $base,
-				filter => $filter,
-				attrs => @attrs ? \@attrs : undef,
-				control => [ $page ]);
-	if ($res->code()) {
-	    die("failed to search LDAP directory: " . $res->error . "\n");
+	my ($filter, @attrs) = @_;
+	verbose("# Looking for $filter in $base");
+	my $page = new Net::LDAP::Control::Paged(size => $opt_P || 250);
+	my %records;
+	while (1) {
+		my $res = $ldap->search(
+			base => $base,
+			filter => $filter,
+			attrs => @attrs ? \@attrs : undef,
+			control => [ $page ]
+		);
+		if ($res->code()) {
+			die("failed to search LDAP directory: " . $res->error . "\n");
+		}
+		foreach my $entry ($res->entries) {
+			foreach my $attr ($entry->attributes) {
+				if ($attr =~ /range=/) {
+					ldap_attribute_search($filter, \%records, $res, $attr);
+				} else {
+					push (@{$records{$entry->dn}{lc $attr}}, ($entry->get_value($attr)));
+				}
+			}
+		}
+		my $control = $res->control(LDAP_CONTROL_PAGED)
+		  or last;
+		my $cookie = $control->cookie
+		  or last;
+		verbose("# next page (", int(keys %records), ")");
+		$page->cookie($cookie);
 	}
-	%records = (%records, %{$res->as_struct()});
-	my $control = $res->control(LDAP_CONTROL_PAGED)
-	    or last;
-	my $cookie = $control->cookie
-	    or last;
-	verbose("# next page (", int(keys %records), ")");
-	$page->cookie($cookie);
-    }
-    verbose("# last page (", int(keys %records), ")");
-    return \%records;
+	verbose("# last page (", int(keys %records), ")");
+	return \%records;
 }
 
 #
